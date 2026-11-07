@@ -2,7 +2,7 @@
 
 **For:** Kompass Pakistan Pvt Ltd
 **Platform:** Google Apps Script web app · Database: Google Sheets
-**Status:** Requirements complete (2026-11-07) — **build on hold until the owner's explicit go-ahead**
+**Status:** Phase 1 built (2026-11-07) — see [DEPLOY.md](DEPLOY.md) for the one-time activation steps
 
 ## What it does
 

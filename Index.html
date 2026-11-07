@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <?!= include('Styles') ?>
+</head>
+<body>
+<div id="toast"></div>
+
+<!-- Loading -->
+<div id="screen-loading" class="center-wrap"><div class="card" style="text-align:center">Loading…</div></div>
+
+<!-- Startup wizard -->
+<div id="screen-wizard" style="display:none" class="center-wrap">
+  <div class="card">
+    <h2 style="margin-top:0">Welcome — one-time setup</h2>
+    <p class="muted small">Step 1 of 4 is below; all four parts are on this one form. This wizard appears only once.</p>
+    <h3>1 · Company</h3>
+    <div class="field"><label>Company name *</label><input id="wz-company"></div>
+    <div class="field"><label>Logo — paste SVG code (optional, no file upload)</label><textarea id="wz-logo" rows="3" placeholder="<svg …>…</svg>"></textarea></div>
+    <div class="field"><label>Brand color</label><input id="wz-color" type="color" value="#2563eb"></div>
+    <div class="grid c2">
+      <div class="field"><label>Address (optional, printed on reports)</label><input id="wz-address"></div>
+      <div class="field"><label>Phone (optional)</label><input id="wz-phone"></div>
+    </div>
+    <h3>2 · Admin account</h3>
+    <div class="grid c2">
+      <div class="field"><label>Your full name *</label><input id="wz-adminName"></div>
+      <div class="field"><label>Username *</label><input id="wz-adminUser"></div>
+      <div class="field"><label>Password * (min 6)</label><input id="wz-adminPass" type="password"></div>
+      <div class="field"><label>Recovery email * (password reset codes go here)</label><input id="wz-recovery" type="email"></div>
+    </div>
+    <h3>3 · Defaults (changeable later in Settings)</h3>
+    <p class="small muted">Low-card warning 20% · Card-expiry warning 30 days · Meter-jump warning 1000 km</p>
+    <h3>4 · Finish</h3>
+    <label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="checkbox" id="wz-demo" style="width:auto"> Load demo data after setup (sample vehicles/cards/entries — removable any time)</label>
+    <button class="btn mt" id="wz-submit" style="width:100%">Finish setup</button>
+  </div>
+</div>
+
+<!-- Login -->
+<div id="screen-login" style="display:none" class="center-wrap">
+  <div class="card">
+    <div id="login-brand" style="text-align:center;margin-bottom:10px"></div>
+    <h2 style="text-align:center;margin:6px 0 16px" id="login-company">Fuel Card Tracking System</h2>
+    <div class="field"><label>Username</label><input id="li-user" autocomplete="username"></div>
+    <div class="field"><label>Password</label><input id="li-pass" type="password" autocomplete="current-password"></div>
+    <button class="btn" id="li-submit" style="width:100%">Log in</button>
+    <p class="small" style="text-align:center"><a href="#" id="li-forgot">Forgot password?</a></p>
+    <div id="reset-box" style="display:none">
+      <hr>
+      <div class="field"><label>Recovery email</label><input id="rs-email" type="email"></div>
+      <button class="btn secondary" id="rs-send" style="width:100%">Email me a reset code</button>
+      <div class="grid c2 mt">
+        <div class="field"><label>Username</label><input id="rs-user"></div>
+        <div class="field"><label>Reset code</label><input id="rs-code"></div>
+      </div>
+      <div class="field"><label>New password</label><input id="rs-new" type="password"></div>
+      <button class="btn" id="rs-submit" style="width:100%">Set new password</button>
+    </div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="appLayout">
+  <div class="sidebar">
+    <div class="brand"><span class="logo" id="sb-logo"></span><div><b id="sb-company">Fuel Cards</b><div class="small muted" id="sb-user"></div></div></div>
+    <div class="navwrap" id="nav"></div>
+    <div class="mt">
+      <button class="btn secondary small" id="theme-toggle">Dark theme</button>
+      <button class="btn secondary small" id="logout-btn">Log out</button>
+    </div>
+  </div>
+  <div class="main">
+    <div class="topbar"><h2 id="view-title" style="margin:0">Dashboard</h2><div class="actions" id="view-actions"></div></div>
+    <div id="view"></div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal" id="modal"><div class="box"><div id="modal-content"></div></div></div>
+
+<?!= include('App') ?>
+</body>
+</html>

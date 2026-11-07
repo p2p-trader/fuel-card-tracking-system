@@ -1,0 +1,628 @@
+<script>
+/* ================= helpers ================= */
+var S = { token: sessionStorage.getItem('fcs_token') || '', user: null, branding: null, boot: null, view: 'dashboard' };
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function fmt(n){ var x = Number(n||0); return x % 1 === 0 ? String(x) : x.toFixed(2); }
+function toast(msg, err){ var t=$('toast'); t.textContent=msg; t.className=err?'err':''; t.style.display='block'; setTimeout(function(){ t.style.display='none'; }, err?6000:3500); }
+function rpc(fn){
+  var args = Array.prototype.slice.call(arguments, 1);
+  return new Promise(function(res, rej){
+    var r = google.script.run.withSuccessHandler(res).withFailureHandler(function(e){ rej(new Error(e.message||String(e))); });
+    r[fn].apply(r, args);
+  });
+}
+async function call(fn){
+  try { return await rpc.apply(null, [fn, S.token].concat(Array.prototype.slice.call(arguments,1))); }
+  catch(e){ toast(e.message, true); if(/log in|Session expired/.test(e.message)) showLogin(); throw e; }
+}
+function can(p){ return S.user && (S.user.isAdmin || S.user.perms.indexOf(p)!==-1); }
+function openModal(html){ $('modal-content').innerHTML = html; $('modal').style.display='block'; }
+function closeModal(){ $('modal').style.display='none'; }
+$('modal').addEventListener('click', function(e){ if(e.target.id==='modal') closeModal(); });
+function applyBranding(){
+  if(!S.branding) return;
+  document.documentElement.style.setProperty('--brand', S.branding.brandColor || '#2563eb');
+  $('login-company').textContent = S.branding.companyName || 'Fuel Card Tracking System';
+  $('login-brand').innerHTML = S.branding.logoSvg || '';
+  $('sb-company').textContent = S.branding.companyName || 'Fuel Cards';
+  $('sb-logo').innerHTML = S.branding.logoSvg || '';
+}
+function applyTheme(t){ document.documentElement.setAttribute('data-theme', t==='dark'?'dark':'light'); $('theme-toggle').textContent = t==='dark' ? 'Light theme' : 'Dark theme'; }
+
+/* ================= boot ================= */
+async function boot(){
+  try {
+    var st = await rpc('appState');
+    S.branding = st.branding; applyBranding();
+    if (st.needsWizard){ showOnly('screen-wizard'); return; }
+    if (S.token){
+      try {
+        var me = await rpc('me', S.token);
+        S.user = me.user; S.branding = me.branding; window.__permDefs = me.permDefs;
+        applyBranding(); applyTheme(S.user.theme);
+        showApp(); return;
+      } catch(e){ S.token=''; sessionStorage.removeItem('fcs_token'); }
+    }
+    showLogin();
+  } catch(e){ toast(e.message, true); showLogin(); }
+}
+function showOnly(id){
+  ['screen-loading','screen-wizard','screen-login'].forEach(function(x){ $(x).style.display = x===id?'block':'none'; });
+  $('appLayout').style.display = id==='app' ? 'block' : 'none';
+}
+function showLogin(){ showOnly('screen-login'); }
+
+/* wizard */
+$('wz-submit').addEventListener('click', async function(){
+  var btn=this; btn.disabled=true;
+  try {
+    await rpc('wizardSubmit', {
+      companyName: $('wz-company').value.trim(), logoSvg: $('wz-logo').value,
+      brandColor: $('wz-color').value, address: $('wz-address').value, phone: $('wz-phone').value,
+      adminName: $('wz-adminName').value.trim(), adminUsername: $('wz-adminUser').value.trim(),
+      adminPassword: $('wz-adminPass').value, recoveryEmail: $('wz-recovery').value.trim()
+    });
+    var li = await rpc('login', $('wz-adminUser').value.trim(), $('wz-adminPass').value);
+    S.token = li.token; S.user = li.user; S.branding = li.branding; window.__permDefs = li.permDefs;
+    sessionStorage.setItem('fcs_token', S.token);
+    applyBranding();
+    if ($('wz-demo').checked){ try { await call('loadDemoData'); } catch(e){} }
+    S.boot = await call('bootstrapData');
+    showApp();
+    toast('Setup complete. Welcome!');
+  } catch(e){ toast(e.message, true); }
+  btn.disabled=false;
+});
+
+/* login */
+async function doLogin(){
+  try {
+    var li = await rpc('login', $('li-user').value.trim(), $('li-pass').value);
+    S.token = li.token; S.user = li.user; S.branding = li.branding; window.__permDefs = li.permDefs;
+    sessionStorage.setItem('fcs_token', S.token);
+    applyBranding(); applyTheme(S.user.theme);
+    S.boot = await call('bootstrapData');
+    showApp();
+  } catch(e){ toast(e.message, true); }
+}
+$('li-submit').addEventListener('click', doLogin);
+$('li-pass').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
+$('li-forgot').addEventListener('click', function(e){ e.preventDefault(); $('reset-box').style.display='block'; });
+$('rs-send').addEventListener('click', async function(){
+  try { await rpc('requestPasswordReset', $('rs-email').value.trim()); toast('If that email matches, a reset code is on its way.'); } catch(e){ toast(e.message,true); }
+});
+$('rs-submit').addEventListener('click', async function(){
+  try { await rpc('resetPasswordWithCode', $('rs-code').value.trim(), $('rs-user').value.trim(), $('rs-new').value); toast('Password updated — log in now.'); $('reset-box').style.display='none'; } catch(e){ toast(e.message,true); }
+});
+$('logout-btn').addEventListener('click', async function(){
+  try { await rpc('logout', S.token); } catch(e){}
+  S.token=''; S.user=null; sessionStorage.removeItem('fcs_token'); showLogin();
+});
+$('theme-toggle').addEventListener('click', async function(){
+  var now = document.documentElement.getAttribute('data-theme')==='dark' ? 'light' : 'dark';
+  applyTheme(now);
+  if (S.token) { try { await call('setMyTheme', now); } catch(e){} }
+});
+
+/* ================= navigation ================= */
+var NAV = [
+  ['dashboard','Dashboard','dashboard'], ['entries','Fuel Entries','entries.view'],
+  ['vehicles','Vehicles','vehicles.manage|dashboard'], ['cards','Fuel Cards','cards.manage|dashboard'],
+  ['drivers','Drivers','drivers.manage|dashboard'], ['trips','Trips','trips.view'],
+  ['audits','Tank Audits','tank.audit'], ['flags','Flags',null],
+  ['reports','Reports','reports.view'], ['users','Users & Permissions','users.manage'],
+  ['history','Change History','history.view'], ['settings','Settings','settings.manage']
+];
+function permOk(spec){
+  if(!spec) return true;
+  return spec.split('|').some(function(p){ return can(p); });
+}
+function buildNav(){
+  $('nav').innerHTML = NAV.filter(function(n){ return permOk(n[2]); }).map(function(n){
+    return '<button class="navbtn'+(S.view===n[0]?' active':'')+'" data-view="'+n[0]+'">'+n[1]+'</button>';
+  }).join('');
+  Array.prototype.forEach.call(document.querySelectorAll('.navbtn'), function(b){
+    b.addEventListener('click', function(){ go(b.getAttribute('data-view')); });
+  });
+  $('sb-user').textContent = S.user ? (S.user.fullName + (S.user.isAdmin ? ' · Admin' : '')) : '';
+}
+function showApp(){ showOnly('app'); buildNav(); go(S.view || 'dashboard'); }
+async function go(view){
+  S.view = view; buildNav();
+  var titles = { dashboard:'Dashboard', entries:'Fuel Entries', vehicles:'Vehicles', cards:'Fuel Cards', drivers:'Drivers', trips:'Trips', audits:'Tank Audits', flags:'Flagged Items', reports:'Reports', users:'Users & Permissions', history:'Change History', settings:'Settings' };
+  $('view-title').textContent = titles[view] || view;
+  $('view-actions').innerHTML = '';
+  try { S.boot = await call('bootstrapData'); } catch(e){ return; }
+  var V = { dashboard:viewDashboard, entries:viewEntries, vehicles:viewVehicles, cards:viewCards, drivers:viewDrivers, trips:viewTrips, audits:viewAudits, flags:viewFlags, reports:viewReports, users:viewUsers, history:viewHistory, settings:viewSettings };
+  if (V[view]) V[view]();
+}
+function opts(list, valKey, labelKey, selected, placeholder){
+  var h = placeholder!==undefined ? '<option value="">'+esc(placeholder)+'</option>' : '';
+  return h + list.map(function(o){ return '<option value="'+esc(o[valKey])+'"'+(String(o[valKey])===String(selected)?' selected':'')+'>'+esc(o[labelKey])+'</option>'; }).join('');
+}
+function badge(txt, cls){ return '<span class="badge '+(cls||'grey')+'">'+esc(txt)+'</span>'; }
+
+/* ================= dashboard ================= */
+async function viewDashboard(){
+  var el = $('view'); el.innerHTML = '<div class="card">Loading dashboard…</div>';
+  var d = await call('getDashboard'); if(!d) return;
+  var sm = d.summary;
+  var h = '<div class="kpis mb">'
+    + kpi('Litres this month', fmt(sm.litresThisMonth), sm.month)
+    + kpi('Last month', fmt(sm.litresLastMonth), '')
+    + kpi('Active cards', sm.activeCards, '') + kpi('Active vehicles', sm.activeVehicles, '')
+    + kpi('Entries today', sm.entriesToday, '') + kpi('Open flags', sm.openFlags, sm.openFlags? 'needs checking':'all clear')
+    + '</div>';
+  h += '<div class="grid c2"><div>';
+  // Cards panel
+  h += '<div class="card"><h3>Fuel Cards — remaining</h3>';
+  h += d.cards.filter(function(c){return c.status==='Active';}).map(function(c){
+    var pct = c.limitLitres>0 ? Math.max(0, Math.min(100, c.remaining/c.limitLitres*100)) : 0;
+    return '<div class="mb"><div class="flex spread"><b>'+esc(c.number)+'</b><span class="'+(c.low?'':'muted')+'">'+fmt(c.remaining)+' / '+fmt(c.limitLitres)+' Ltr</span></div>'
+      + '<div class="bar"><i class="'+(c.low?'low':'')+'" style="width:'+pct+'%"></i></div>'
+      + '<div class="small muted">'+esc(c.primaryVehicleReg||'')+(c.low?' · <b style="color:var(--danger)">LOW</b>':'')+(c.forecast?' · finishes ~'+esc(c.forecast):'')+'</div></div>';
+  }).join('') + '</div>';
+  // Vehicle tanks
+  h += '<div class="card"><h3>Vehicle Tanks</h3>' + d.tanks.map(function(t){
+    return '<div class="flex spread" style="padding:4px 0;border-bottom:1px solid var(--border)"><span><b>'+esc(t.regNo)+'</b> <span class="muted small">'+esc(t.model)+'</span></span><span>'+fmt(t.tank)+' Ltr'+(t.capacity?' / '+fmt(t.capacity):'')+(t.negative?' '+badge('NEGATIVE','red'):t.over?' '+badge('OVER','red'):t.nearEmpty?' '+badge('NEAR EMPTY','amber'):'')+'</span></div>';
+  }).join('') + '</div>';
+  // Source split + chart
+  h += '<div class="card"><h3>This Month by Source</h3><div class="flex">'
+    + '<span>'+badge('Card','grey')+' '+fmt(d.sourceSplit.CARD)+' Ltr</span>'
+    + '<span>'+badge('Cash','grey')+' '+fmt(d.sourceSplit.CASH)+' Ltr</span>'
+    + '<span>'+badge('Company Tank','grey')+' '+fmt(d.sourceSplit.TANK)+' Ltr</span></div>'
+    + '<h3 class="mt">Daily Consumption — last 30 days</h3><div class="chart">'
+    + (function(){ var mx = Math.max.apply(null, d.chart.map(function(c){return c.litres;}).concat([1])); return d.chart.map(function(c){ return '<i title="'+c.date+': '+fmt(c.litres)+' Ltr" style="height:'+Math.max(2, c.litres/mx*100)+'%"></i>'; }).join(''); })()
+    + '</div></div>';
+  h += '</div><div>';
+  // Needs attention
+  h += '<div class="card"><h3>Needs Attention ('+d.attention.length+')</h3>';
+  h += d.attention.length ? d.attention.map(function(a){
+    return '<div style="padding:6px 0;border-bottom:1px solid var(--border)"><b>'+esc(a.vehicleReg||'')+'</b> <span class="small">'+esc(a.message)+'</span></div>';
+  }).join('') : '<p class="muted">Nothing needs attention. ✔</p>';
+  h += '</div>';
+  // Out now
+  h += '<div class="card"><h3>Vehicles Out Now</h3>' + (d.outNow.length ? d.outNow.map(function(t){
+    return '<div class="flex spread" style="padding:4px 0;border-bottom:1px solid var(--border)"><span><b>'+esc(t.vehicleReg)+'</b> → '+esc(t.toLoc)+'</span><span class="muted small">'+esc(t.driverName||'')+' · '+t.days+'d out</span></div>';
+  }).join('') : '<p class="muted">No vehicles out on trips.</p>') + '</div>';
+  // Top 5
+  h += '<div class="card"><h3>Top 5 Vehicles — consumption this month</h3>' + (d.top5.length ? d.top5.map(function(t,i){
+    return '<div class="flex spread" style="padding:4px 0;border-bottom:1px solid var(--border)"><span>'+(i+1)+'. <b>'+esc(t.vehicleReg)+'</b></span><span>'+fmt(t.litres)+' Ltr</span></div>';
+  }).join('') : '<p class="muted">No fills this month yet.</p>') + '</div>';
+  // Recent entries
+  h += '<div class="card"><h3>Recent Entries</h3>' + entryTable(d.recentEntries, true) + '</div>';
+  // Recent activity
+  h += '<div class="card"><h3>Recent Activity</h3>' + d.recentActivity.map(function(a){
+    return '<div class="small" style="padding:4px 0;border-bottom:1px solid var(--border)"><span class="muted">'+esc(String(a.at).slice(0,16).replace('T',' '))+'</span> <b>'+esc(a.username)+'</b> '+esc(a.details||a.action)+'</div>';
+  }).join('') + '</div>';
+  h += '</div></div>';
+  el.innerHTML = h;
+}
+function kpi(label, value, sub){ return '<div class="kpi"><div class="muted small">'+esc(label)+'</div><div class="v">'+esc(value)+'</div><div class="muted small">'+esc(sub||'')+'</div></div>'; }
+function entryTable(list, compact){
+  if(!list.length) return '<p class="muted">No entries.</p>';
+  return '<div style="overflow-x:auto"><table><tr><th>Date</th><th>Source</th><th>Vehicle</th><th>Doc No.</th><th>Litres</th><th>Meter</th><th>Driver</th><th>Tank After</th>'+(compact?'':'<th></th>')+'</tr>'
+    + list.map(function(e){
+      return '<tr><td>'+esc(e.date)+(e.problemPeriod?' '+badge('PROBLEM','amber'):'')+(e.alternateCard?' '+badge('ALT CARD','amber'):'')+(e.flags&&e.flags.length?' '+badge('⚑ '+e.flags.length,'red'):'')+'</td><td>'+esc(e.source)+'</td><td>'+esc(e.vehicleReg)+'</td><td>'+esc(e.docNo)+'</td><td>'+fmt(e.litres)+'</td><td>'+fmt(e.meter)+'</td><td>'+esc(e.driverName||'')+'</td><td>'+fmt(e.tankAfter)+'</td>'
+      + (compact?'':'<td class="no-print">'+(can('entries.edit')?'<button class="btn secondary small" onclick="editEntry(\''+e.id+'\')">Edit</button> ':'')+(can('entries.delete')?'<button class="btn danger small" onclick="delEntry(\''+e.id+'\')">Delete</button>':'')+'</td>')+'</tr>';
+    }).join('') + '</table></div>';
+}
+</script>
+<script>
+/* ================= entries ================= */
+var entryCache = [];
+async function viewEntries(){
+  $('view-actions').innerHTML = (can('entries.add') ? '<button class="btn" onclick="entryForm()">+ Add Entry</button>' : '')
+    + ' <input id="doc-search" placeholder="Search Tracking ID / Receipt / Voucher" style="width:260px;display:inline-block"> <button class="btn secondary" onclick="docSearch()">Find</button>';
+  $('view').innerHTML = '<div class="card"><div class="flex mb">'
+    + '<input type="date" id="ef-from" style="width:auto"><input type="date" id="ef-to" style="width:auto">'
+    + '<select id="ef-vehicle" style="width:auto">'+opts(S.boot.vehicles,'id','regNo','','All vehicles')+'</select>'
+    + '<select id="ef-source" style="width:auto"><option value="">All sources</option><option>CARD</option><option>CASH</option><option>TANK</option></select>'
+    + '<button class="btn secondary" onclick="loadEntries()">Filter</button></div><div id="entries-box">Loading…</div></div>';
+  loadEntries();
+}
+async function loadEntries(){
+  var f = { from: $('ef-from').value, to: $('ef-to').value, vehicleId: $('ef-vehicle').value, source: $('ef-source').value };
+  entryCache = await call('listEntries', f);
+  $('entries-box').innerHTML = entryTable(entryCache, false);
+}
+async function docSearch(){
+  var q = $('doc-search').value.trim(); if(!q) return;
+  var e = await call('findEntryByDoc', q);
+  $('entries-box').innerHTML = e ? entryTable([e], false) : '<p class="muted">No entry with that document number.</p>';
+}
+function entryForm(e){
+  e = e || {};
+  var src = e.source || 'CARD';
+  var veh = S.boot.vehicles.filter(function(v){return v.status==='Active';});
+  var crd = S.boot.cards.filter(function(c){return c.status==='Active';});
+  var pmp = S.boot.pumps.filter(function(p){return p.status==='Active';});
+  openModal('<h3 style="margin-top:0">'+(e.id?'Edit':'Add')+' Fuel Entry</h3>'
+  + '<div class="field"><label>Source</label><select id="en-source"><option value="CARD"'+(src==='CARD'?' selected':'')+'>Card</option><option value="CASH"'+(src==='CASH'?' selected':'')+'>Cash (pump)</option><option value="TANK"'+(src==='TANK'?' selected':'')+'>Company Tank</option></select></div>'
+  + '<div class="grid c2"><div class="field"><label>Date *</label><input type="date" id="en-date" value="'+esc(e.date||new Date().toISOString().slice(0,10))+'"></div>'
+  + '<div class="field"><label>Time</label><input type="time" id="en-time" value="'+esc(e.time||'')+'"></div></div>'
+  + '<div class="field"><label>Vehicle *</label><select id="en-vehicle">'+opts(veh,'id','regNo',e.vehicleId)+'</select></div>'
+  + '<div class="en-card"><div class="field"><label>Card used *</label><select id="en-card">'+opts(crd,'id','number',e.cardId)+'</select></div></div>'
+  + '<div class="en-pump"><div class="field"><label>Pump *</label><select id="en-pump">'+opts(pmp,'id','name',e.pumpId)+'</select></div></div>'
+  + '<div class="field"><label id="en-doc-label">Tracking ID *</label><input id="en-doc" value="'+esc(e.docNo||'')+'"></div>'
+  + '<div class="grid c2"><div class="field"><label>Litres filled *</label><input type="number" step="0.01" id="en-litres" value="'+esc(e.litres||'')+'"></div>'
+  + '<div class="field"><label>Meter reading *</label><input type="number" step="0.1" id="en-meter" value="'+esc(e.meter||'')+'"></div></div>'
+  + '<div class="en-card"><div class="field"><label>Remaining in card on slip (Ltr)</label><input type="number" step="0.01" id="en-slip" value="'+esc(e.slipRemaining==null?'':e.slipRemaining)+'"></div></div>'
+  + '<div class="en-cash" style="display:none"><div class="grid c2"><div class="field"><label>Paid by</label><input id="en-paidby" value="'+esc(e.paidBy||'')+'"></div>'
+  + '<div class="field"><label>Reason * (e.g. card not working)</label><input id="en-reason" value="'+esc(e.reason||'')+'"></div></div></div>'
+  + '<div class="grid c2"><div class="field"><label>Rate per Litre (Rs, optional)</label><input type="number" step="0.01" id="en-rate" value="'+esc(e.ratePerLitre==null?'':e.ratePerLitre)+'"></div>'
+  + '<div class="field"><label>Total Amount (Rs, optional)</label><input type="number" step="0.01" id="en-amount" value="'+esc(e.amount==null?'':e.amount)+'"></div></div>'
+  + '<div class="flex"><button class="btn" onclick="saveEntryForm(\''+(e.id||'')+'\')">Save entry</button><button class="btn secondary" onclick="closeModal()">Cancel</button></div>'
+  + '<p class="small muted">Driver and fuel type are filled automatically. Document numbers must be unique — duplicates are blocked.</p>');
+  var upd = function(){
+    var s = $('en-source').value;
+    document.querySelectorAll('.en-card').forEach(function(x){ x.style.display = s==='CARD'?'block':'none'; });
+    document.querySelectorAll('.en-pump').forEach(function(x){ x.style.display = s==='TANK'?'none':'block'; });
+    document.querySelectorAll('.en-cash').forEach(function(x){ x.style.display = s==='CASH'?'block':'none'; });
+    $('en-doc-label').textContent = s==='CARD' ? 'Tracking ID *' : s==='CASH' ? 'Receipt No. *' : 'Issue Voucher No. *';
+  };
+  $('en-source').addEventListener('change', upd); upd();
+  $('en-vehicle').addEventListener('change', function(){
+    var v = S.boot.vehicles.find(function(x){ return x.id === this.value; });
+    if (v && v.cardId && $('en-source').value==='CARD') $('en-card').value = v.cardId;
+  });
+}
+async function saveEntryForm(id){
+  var p = { id: id||undefined, source: $('en-source').value, date: $('en-date').value, time: $('en-time').value,
+    vehicleId: $('en-vehicle').value, cardId: $('en-card') ? $('en-card').value : '', pumpId: $('en-pump') ? $('en-pump').value : '',
+    docNo: $('en-doc').value.trim(), litres: $('en-litres').value, meter: $('en-meter').value,
+    slipRemaining: $('en-slip') ? $('en-slip').value : '', paidBy: $('en-paidby') ? $('en-paidby').value : '',
+    reason: $('en-reason') ? $('en-reason').value : '', ratePerLitre: $('en-rate').value, amount: $('en-amount').value };
+  try { await call('saveEntry', p); closeModal(); toast('Entry saved.'); go('entries'); } catch(e){}
+}
+function editEntry(id){ var e = entryCache.find(function(x){ return x.id===id; }); if(e) entryForm(e); }
+async function delEntry(id){ if(!confirm('Delete this entry? Tank and card figures will be recalculated.')) return; try { await call('deleteEntry', id); toast('Deleted.'); go('entries'); } catch(e){} }
+
+/* ================= vehicles ================= */
+async function viewVehicles(){
+  $('view-actions').innerHTML = can('vehicles.manage') ? '<button class="btn" onclick="vehicleForm()">+ Add Vehicle</button>' : '';
+  var list = S.boot.vehicles;
+  $('view').innerHTML = '<div class="card"><div style="overflow-x:auto"><table><tr><th>Reg No</th><th>Model</th><th>Fuel</th><th>Card</th><th>Meter</th><th>Tank</th><th>Avg</th><th>Driver</th><th>Status</th><th></th></tr>'
+  + list.map(function(v){
+    return '<tr><td><b>'+esc(v.regNo)+'</b>'+(v.hasProblem?' '+badge('PROBLEM','amber'):'')+(v.serviceOverdue?' '+badge('SERVICE OVERDUE','red'):v.serviceNear?' '+badge('SERVICE DUE','amber'):'')+'</td><td>'+esc(v.model)+'</td><td>'+esc(v.fuelType)+'</td><td>'+esc(v.cardNumber||'')+'</td><td>'+fmt(v.currentMeter)+'</td><td>'+fmt(v.currentTank)+' / '+fmt(v.tankCapacity)+'</td><td>'+fmt(v.stdAvg)+'</td><td>'+esc(v.activeDriverName||'—')+'</td><td>'+badge(v.status, v.status==='Active'?'green':'grey')+'</td>'
+    + '<td class="no-print">'+(can('vehicles.manage')?'<button class="btn secondary small" onclick="vehicleForm(\''+v.id+'\')">Edit</button> <button class="btn secondary small" onclick="vehicleMore(\''+v.id+'\')">More</button>':'')+'</td></tr>';
+  }).join('') + '</table></div></div>';
+}
+function vehicleForm(id){
+  var v = id ? S.boot.vehicles.find(function(x){return x.id===id;}) : {};
+  var crd = S.boot.cards;
+  openModal('<h3 style="margin-top:0">'+(id?'Edit':'Add')+' Vehicle</h3>'
+  + '<div class="grid c2"><div class="field"><label>Registration No *</label><input id="vf-reg" value="'+esc(v.regNo||'')+'"></div>'
+  + '<div class="field"><label>Vehicle name / model</label><input id="vf-model" value="'+esc(v.model||'')+'"></div>'
+  + '<div class="field"><label>Fixed fuel type</label><select id="vf-fuel"><option'+(v.fuelType==='Petrol'?' selected':'')+'>Petrol</option><option'+(v.fuelType==='Diesel'?' selected':'')+'>Diesel</option><option'+(v.fuelType==='CNG'?' selected':'')+'>CNG</option></select></div>'
+  + '<div class="field"><label>Assigned fuel card</label><select id="vf-card">'+opts(crd,'id','number',v.cardId,'— none —')+'</select></div>'
+  + '<div class="field"><label>Standard Average (km/L) *</label><input type="number" step="0.01" id="vf-avg" value="'+esc(v.stdAvg||'')+'"></div>'
+  + '<div class="field"><label>Tank capacity (Ltr)</label><input type="number" step="0.01" id="vf-cap" value="'+esc(v.tankCapacity||'')+'"></div>'
+  + (id?'':'<div class="field"><label>Opening meter reading</label><input type="number" step="0.1" id="vf-meter" value="0"></div><div class="field"><label>Fuel already in tank (Ltr)</label><input type="number" step="0.01" id="vf-tank" value="0"></div>')
+  + '<div class="field"><label>Ownership</label><select id="vf-own"><option'+(v.ownership!=='Third-Party'?' selected':'')+'>Company Own</option><option'+(v.ownership==='Third-Party'?' selected':'')+'>Third-Party</option></select></div>'
+  + '<div class="field"><label>Contractor / owner name (if third-party)</label><input id="vf-contractor" value="'+esc(v.contractorName||'')+'"></div>'
+  + '<div class="field"><label>Service interval (km, 0 = off)</label><input type="number" id="vf-svc" value="'+esc(v.serviceIntervalKm||'')+'"></div>'
+  + (id?'<div class="field"><label>Last service meter</label><input type="number" id="vf-lsvc" value="'+esc(v.lastServiceMeter||'')+'"></div>':'')
+  + '</div><div class="flex"><button class="btn" onclick="saveVehicleForm(\''+(id||'')+'\')">Save</button><button class="btn secondary" onclick="closeModal()">Cancel</button></div>');
+}
+async function saveVehicleForm(id){
+  var p = { id: id||undefined, regNo: $('vf-reg').value.trim(), model: $('vf-model').value, fuelType: $('vf-fuel').value,
+    cardId: $('vf-card').value, stdAvg: $('vf-avg').value, tankCapacity: $('vf-cap').value,
+    ownership: $('vf-own').value, contractorName: $('vf-contractor').value, serviceIntervalKm: $('vf-svc').value };
+  if (!id){ p.openingMeter = $('vf-meter').value; p.openingTank = $('vf-tank').value; p.lastServiceMeter = $('vf-meter').value; }
+  if (id && $('vf-lsvc')){ /* last service edited via Record Service */ }
+  try { await call('saveVehicle', p); closeModal(); toast('Vehicle saved.'); go('vehicles'); } catch(e){}
+}
+async function vehicleMore(id){
+  var v = S.boot.vehicles.find(function(x){ return x.id===id; });
+  var asg = await call('getAssignments', id); var probs = await call('getProblems', id);
+  openModal('<h3 style="margin-top:0">'+esc(v.regNo)+' — more</h3>'
+  + '<h4>Driver assignment</h4><div class="flex"><select id="vm-driver" style="width:auto">'+opts(S.boot.drivers.filter(function(d){return d.status==="Active";}),'id','name')+'</select><input type="date" id="vm-from" style="width:auto" value="'+new Date().toISOString().slice(0,10)+'"><button class="btn small" onclick="assignDriverUi(\''+id+'\')">Assign from date</button></div>'
+  + '<div class="small mt">'+asg.map(function(a){ return esc(a.driverName)+' · '+esc(a.fromDate)+' → '+(a.toDate?esc(a.toDate):'<b>active</b>'); }).join('<br>')+'</div>'
+  + '<h4 class="mt">Vehicle problems</h4>' + (probs.length ? probs.map(function(p){ return '<div class="small" style="padding:4px 0;border-bottom:1px solid var(--border)">'+esc(p.startDate)+' · '+esc(p.note)+' '+badge(p.status, p.status==='Open'?'amber':'grey')+(p.tempAvg?' · temp avg '+fmt(p.tempAvg):'')+(p.status==='Open'?' <button class="btn secondary small" onclick="closeProblemUi(\''+p.id+'\',\''+id+'\')">Close</button>':'')+'</div>'; }).join('') : '<p class="small muted">No problems recorded.</p>')
+  + '<div class="flex mt"><input id="vm-pnote" placeholder="Problem note" style="flex:1"><input id="vm-pavg" type="number" step="0.01" placeholder="Temp avg" style="width:110px"><button class="btn small" onclick="openProblemUi(\''+id+'\')">Open problem</button></div>'
+  + '<h4 class="mt">Service</h4><div class="flex"><input type="number" id="vm-svcmeter" placeholder="Meter at service" style="width:180px"><button class="btn small secondary" onclick="recordServiceUi(\''+id+'\')">Record service done</button>'
+  + '<button class="btn small secondary" onclick="toggleVehicleStatus(\''+id+'\',\''+(v.status==='Active'?'Inactive':'Active')+'\')">Set '+(v.status==='Active'?'Inactive':'Active')+'</button></div>'
+  + '<div class="mt"><button class="btn secondary" onclick="closeModal()">Close</button></div>');
+}
+async function assignDriverUi(vid){ try { await call('assignDriver', vid, $('vm-driver').value, $('vm-from').value); toast('Driver assigned.'); closeModal(); go('vehicles'); } catch(e){} }
+async function openProblemUi(vid){ try { await call('openProblem', { vehicleId: vid, startDate: new Date().toISOString().slice(0,10), note: $('vm-pnote').value, tempAvg: $('vm-pavg').value }); toast('Problem opened.'); closeModal(); go('vehicles'); } catch(e){} }
+async function closeProblemUi(pid, vid){ var note = prompt('Repair note (what was fixed)?'); if(note===null) return; try { await call('closeProblem', pid, new Date().toISOString().slice(0,10), note); toast('Problem closed.'); closeModal(); go('vehicles'); } catch(e){} }
+async function recordServiceUi(vid){ try { await call('recordService', vid, $('vm-svcmeter').value); toast('Service recorded.'); closeModal(); go('vehicles'); } catch(e){} }
+async function toggleVehicleStatus(vid, st){ try { await call('setVehicleStatus', vid, st); closeModal(); go('vehicles'); } catch(e){} }
+
+/* ================= cards ================= */
+async function viewCards(){
+  $('view-actions').innerHTML = can('cards.manage') ? '<button class="btn" onclick="cardForm()">+ Add Card</button>' : '';
+  var mk = new Date().toISOString().slice(0,7);
+  var list = await call('getCards', mk);
+  $('view').innerHTML = '<div class="card"><p class="small muted">Figures for '+mk+'. PINs show only with the View PIN permission.</p><div style="overflow-x:auto"><table><tr><th>Card</th><th>Provider</th><th>Vehicle</th><th>Limit</th><th>Used</th><th>Remaining</th><th>Expiry</th><th>PIN</th><th>Status</th><th></th></tr>'
+  + list.map(function(c){
+    return '<tr><td><b>'+esc(c.number)+'</b>'+(c.low&&c.status==='Active'?' '+badge('LOW','red'):'')+(c.forecast&&c.status==='Active'?'<div class="small muted">finishes ~'+esc(c.forecast)+'</div>':'')+'</td><td>'+esc(c.provider)+'</td><td>'+esc(c.primaryVehicleReg)+'</td><td>'+fmt(c.limitLitres)+'</td><td>'+fmt(c.used)+'</td><td>'+fmt(c.remaining)+'</td><td>'+esc(c.expiryDate||'')+(c.expiringSoon?' '+badge('EXPIRING','amber'):c.expired?' '+badge('EXPIRED','red'):'')+'</td><td>'+(c.pin?esc(c.pin):esc(c.pinMasked||''))+'</td><td>'+badge(c.status, c.status==='Active'?'green':'grey')+'</td>'
+    + '<td class="no-print">'+(can('cards.manage')&&c.status==='Active'?'<button class="btn secondary small" onclick="cardForm(\''+c.id+'\')">Edit</button> <button class="btn danger small" onclick="closeCardUi(\''+c.id+'\')">Close / Replace</button>':'')+'</td></tr>';
+  }).join('') + '</table></div></div>';
+}
+function cardForm(id){
+  var c = id ? S.boot.cards.find(function(x){return x.id===id;}) : {};
+  openModal('<h3 style="margin-top:0">'+(id?'Edit':'Add')+' Fuel Card</h3>'
+  + '<div class="grid c2"><div class="field"><label>Card number *</label><input id="cf-num" value="'+esc(c.number||'')+'"></div>'
+  + '<div class="field"><label>PIN (CODE)</label><input id="cf-pin" value="'+esc(c.pin||'')+'" placeholder="'+(id?'Leave blank to keep':'')+'"></div>'
+  + '<div class="field"><label>Provider</label><input id="cf-prov" value="'+esc(c.provider||'')+'" placeholder="PSO / Shell / Attock…"></div>'
+  + '<div class="field"><label>Monthly limit (Ltr) *</label><input type="number" step="0.01" id="cf-limit" value="'+esc(c.limitLitres||'')+'"></div>'
+  + (id?'':'<div class="field"><label>Current remaining balance (Ltr) — from latest slip</label><input type="number" step="0.01" id="cf-open" value=""></div>')
+  + '<div class="field"><label>Primary vehicle</label><select id="cf-veh">'+opts(S.boot.vehicles,'id','regNo',c.primaryVehicleId,'— none —')+'</select></div>'
+  + '<div class="field"><label>Expiry date</label><input type="date" id="cf-exp" value="'+esc(c.expiryDate||'')+'"></div></div>'
+  + '<div class="flex"><button class="btn" onclick="saveCardForm(\''+(id||'')+'\')">Save</button><button class="btn secondary" onclick="closeModal()">Cancel</button></div>'
+  + (id?'':'<p class="small muted">The remaining balance you enter becomes the starting point for this month; the limit resets to full on the 1st of next month.</p>'));
+}
+async function saveCardForm(id){
+  var p = { id: id||undefined, number: $('cf-num').value.trim(), pin: $('cf-pin').value, provider: $('cf-prov').value,
+    limitLitres: $('cf-limit').value, primaryVehicleId: $('cf-veh').value, expiryDate: $('cf-exp').value };
+  if (!id) p.openingRemaining = $('cf-open').value;
+  try { await call('saveCard', p); closeModal(); toast('Card saved.'); go('cards'); } catch(e){}
+}
+async function closeCardUi(id){
+  var reason = prompt('Reason for closing (e.g. Lost / Blocked / Damaged)?'); if(reason===null) return;
+  var rep = confirm('Will a replacement card be issued for this vehicle? OK = yes, enter its details next.');
+  var replacement = null;
+  if (rep){
+    var num = prompt('Replacement card number:'); if(!num) return;
+    var rem = prompt('Replacement card current remaining (Ltr):', '0');
+    replacement = { number: num, openingRemaining: rem||0 };
+  }
+  try { await call('closeCard', id, reason, replacement); toast('Card closed.'); go('cards'); } catch(e){}
+}
+
+/* ================= drivers & pumps ================= */
+async function viewDrivers(){
+  $('view-actions').innerHTML = can('drivers.manage') ? '<button class="btn" onclick="driverForm()">+ Add Driver</button>' : '';
+  $('view').innerHTML = '<div class="grid c2"><div class="card"><h3>Drivers</h3><table><tr><th>Name</th><th>Status</th><th></th></tr>'
+  + S.boot.drivers.map(function(d){ return '<tr><td>'+esc(d.name)+'</td><td>'+badge(d.status, d.status==='Active'?'green':'grey')+'</td><td class="no-print">'+(can('drivers.manage')?'<button class="btn secondary small" onclick="toggleDriver(\''+d.id+'\',\''+(d.status==='Active'?'Inactive':'Active')+'\')">'+(d.status==='Active'?'Deactivate':'Activate')+'</button>':'')+'</td></tr>'; }).join('') + '</table></div>'
+  + '<div class="card"><h3>Pumps</h3>'+(can('pumps.manage')?'<div class="flex mb"><input id="pm-name" placeholder="New pump name" style="flex:1"><button class="btn small" onclick="addPump()">Add pump</button></div>':'')
+  + '<table><tr><th>Name</th><th>Status</th><th></th></tr>'
+  + S.boot.pumps.map(function(p){ return '<tr><td>'+esc(p.name)+'</td><td>'+badge(p.status, p.status==='Active'?'green':'grey')+'</td><td class="no-print">'+(can('pumps.manage')?'<button class="btn secondary small" onclick="togglePump(\''+p.id+'\',\''+(p.status==='Active'?'Inactive':'Active')+'\')">'+(p.status==='Active'?'Deactivate':'Activate')+'</button>':'')+'</td></tr>'; }).join('') + '</table></div></div>';
+}
+function driverForm(){ var n = prompt('Driver name (name only — no other details are kept):'); if(!n) return; call('saveDriver', { name: n }).then(function(){ toast('Driver added.'); go('drivers'); }).catch(function(){}); }
+async function toggleDriver(id, st){ try { await call('setDriverStatus', id, st); go('drivers'); } catch(e){} }
+async function addPump(){ try { await call('savePump', { name: $('pm-name').value }); go('drivers'); } catch(e){} }
+async function togglePump(id, st){ try { await call('setPumpStatus', id, st); go('drivers'); } catch(e){} }
+
+/* ================= trips ================= */
+var tripCache = [];
+async function viewTrips(){
+  $('view-actions').innerHTML = can('trips.manage') ? '<button class="btn" onclick="tripForm()">+ Start Trip</button>' : '';
+  tripCache = await call('listTrips', {});
+  $('view').innerHTML = '<div class="card"><div style="overflow-x:auto"><table><tr><th>Start</th><th>Vehicle</th><th>Driver</th><th>From → To</th><th>Purpose</th><th>Km</th><th>Status</th><th></th></tr>'
+  + tripCache.map(function(t){
+    return '<tr><td>'+esc(t.startDate)+'</td><td>'+esc(t.vehicleReg)+'</td><td>'+esc(t.driverName||'')+'</td><td>'+esc(t.fromLoc)+' → '+esc(t.toLoc)+'</td><td>'+esc(t.purpose)+'</td><td>'+(t.status==='Closed'?fmt(t.km):'—')+'</td><td>'+badge(t.status, t.status==='Open'?'amber':'green')+'</td>'
+    + '<td class="no-print">'+(can('trips.manage')&&t.status==='Open'?'<button class="btn small" onclick="closeTripUi(\''+t.id+'\')">Close trip</button> ':'')+(can('trips.manage')?'<button class="btn danger small" onclick="delTrip(\''+t.id+'\')">Delete</button>':'')+'</td></tr>';
+  }).join('') + '</table></div></div>';
+}
+function tripForm(){
+  openModal('<h3 style="margin-top:0">Start Trip</h3>'
+  + '<div class="field"><label>Vehicle *</label><select id="tf-veh">'+opts(S.boot.vehicles.filter(function(v){return v.status==="Active";}),'id','regNo')+'</select></div>'
+  + '<div class="grid c2"><div class="field"><label>From</label><input id="tf-from"></div><div class="field"><label>To *</label><input id="tf-to"></div></div>'
+  + '<div class="field"><label>Purpose</label><input id="tf-purpose"></div>'
+  + '<div class="grid c2"><div class="field"><label>Start date *</label><input type="date" id="tf-date" value="'+new Date().toISOString().slice(0,10)+'"></div>'
+  + '<div class="field"><label>Start meter *</label><input type="number" step="0.1" id="tf-meter"></div></div>'
+  + '<p class="small muted">The driver is filled automatically from the vehicle\'s assignment for that date.</p>'
+  + '<div class="flex"><button class="btn" onclick="saveTripForm()">Start trip</button><button class="btn secondary" onclick="closeModal()">Cancel</button></div>');
+}
+async function saveTripForm(){
+  try { var r = await call('startTrip', { vehicleId: $('tf-veh').value, fromLoc: $('tf-from').value, toLoc: $('tf-to').value, purpose: $('tf-purpose').value, startDate: $('tf-date').value, startMeter: $('tf-meter').value });
+    if (r && r.overlapWarning) toast('Trip started — note: this vehicle already had an open trip.', true); else toast('Trip started.');
+    closeModal(); go('trips'); } catch(e){}
+}
+async function closeTripUi(id){
+  var m = prompt('End meter reading:'); if(m===null) return;
+  try { var r = await call('closeTrip', id, new Date().toISOString().slice(0,10), m); toast('Trip closed — '+fmt(r.km)+' km.'); go('trips'); } catch(e){}
+}
+async function delTrip(id){ if(!confirm('Delete this trip?')) return; try { await call('deleteTrip', id); go('trips'); } catch(e){} }
+
+/* ================= tank audits ================= */
+async function viewAudits(){
+  $('view-actions').innerHTML = can('tank.audit') ? '<button class="btn" onclick="auditForm()">+ Tank Audit</button>' : '';
+  var list = await call('listTankAudits');
+  $('view').innerHTML = '<div class="card"><p class="small muted">Every difference — even 1 Litre — is flagged for checking.</p><table><tr><th>Date</th><th>Vehicle</th><th>System (Ltr)</th><th>Physical (Ltr)</th><th>Difference</th><th>Reason</th><th>Auditor</th></tr>'
+  + list.map(function(a){ return '<tr><td>'+esc(a.date)+'</td><td>'+esc(a.vehicleReg)+'</td><td>'+fmt(a.systemLitres)+'</td><td>'+fmt(a.physicalLitres)+'</td><td>'+(a.difference!==0?badge(fmt(a.difference),'red'):fmt(0))+'</td><td>'+esc(a.reason)+'</td><td>'+esc(a.auditor)+'</td></tr>'; }).join('') + '</table></div>';
+}
+function auditForm(){
+  openModal('<h3 style="margin-top:0">Tank Audit / Adjustment</h3>'
+  + '<div class="field"><label>Vehicle *</label><select id="af-veh">'+opts(S.boot.vehicles,'id','regNo')+'</select></div>'
+  + '<div class="grid c2"><div class="field"><label>Date *</label><input type="date" id="af-date" value="'+new Date().toISOString().slice(0,10)+'"></div>'
+  + '<div class="field"><label>Physical tank figure (Ltr) *</label><input type="number" step="0.01" id="af-phys"></div></div>'
+  + '<div class="field"><label>Reason note *</label><input id="af-reason" placeholder="e.g. Monthly physical check"></div>'
+  + '<p class="small muted">The system records an adjustment for the difference — it never silently overwrites. The tank balance restarts from the physical figure from this date.</p>'
+  + '<div class="flex"><button class="btn" onclick="saveAuditForm()">Save audit</button><button class="btn secondary" onclick="closeModal()">Cancel</button></div>');
+}
+async function saveAuditForm(){
+  try { var r = await call('saveTankAudit', { vehicleId: $('af-veh').value, date: $('af-date').value, physicalLitres: $('af-phys').value, reason: $('af-reason').value });
+    toast('Audit saved. Difference: '+fmt(r.difference)+' Ltr.'); closeModal(); go('audits'); } catch(e){}
+}
+
+/* ================= flags ================= */
+async function viewFlags(){
+  var list = await call('listFlags', '');
+  $('view').innerHTML = '<div class="card"><table><tr><th>Created</th><th>Kind</th><th>Vehicle / Card</th><th>Message</th><th>Status</th><th></th></tr>'
+  + list.map(function(f){
+    return '<tr><td>'+esc(String(f.createdAt).slice(0,10))+'</td><td>'+badge(f.kind, f.status==='Open'?'red':'grey')+'</td><td>'+esc(f.vehicleReg)+' '+esc(f.cardNumber)+'</td><td>'+esc(f.message)+(f.status==='Resolved'?'<div class="small muted">Resolved by '+esc(f.resolvedBy)+': '+esc(f.resolveNote)+'</div>':'')+'</td><td>'+esc(f.status)+'</td>'
+    + '<td class="no-print">'+(f.status==='Open'&&can('flags.resolve')?'<button class="btn small" onclick="resolveFlagUi(\''+f.id+'\')">Resolve</button>':'')+'</td></tr>';
+  }).join('') + '</table></div>';
+}
+async function resolveFlagUi(id){
+  var note = prompt('Resolution note (what did you check / find)?'); if(!note) return;
+  try { await call('resolveFlag', id, note); toast('Flag resolved.'); go('flags'); } catch(e){}
+}
+
+/* ================= reports ================= */
+var REPORTS = [['monthly-cards','Monthly Card Report',true],['monthly-vehicles','Monthly Vehicle Report',true],['ledger','Fuel Ledger',false],['alternate-card','Alternate Card Report',false],['flagged','Flagged Entries Report',false],['source','Source Report',true],['driver','Driver Report',true],['tank-audit','Tank Audit Report',false],['trips','Trip Report',false]];
+var reportData = null;
+async function viewReports(){
+  $('view').innerHTML = '<div class="card"><div class="flex">'
+  + '<select id="rp-name" style="width:auto">'+REPORTS.map(function(r){ return '<option value="'+r[0]+'">'+r[1]+'</option>'; }).join('')+'</select>'
+  + '<input type="month" id="rp-month" style="width:auto" value="'+new Date().toISOString().slice(0,7)+'">'
+  + '<input type="date" id="rp-from" style="width:auto"><input type="date" id="rp-to" style="width:auto">'
+  + '<button class="btn" onclick="loadReport()">Show</button>'
+  + (can('reports.export')?'<button class="btn secondary" onclick="exportReport()">Download Excel (CSV)</button><button class="btn secondary" onclick="window.print()">Print / PDF</button>':'')
+  + '</div><div id="rp-box" class="mt"><p class="muted">Choose a report and press Show.</p></div></div>';
+}
+async function loadReport(){
+  reportData = await call('getReport', $('rp-name').value, { month: $('rp-month').value, from: $('rp-from').value, to: $('rp-to').value });
+  if(!reportData) return;
+  $('rp-box').innerHTML = '<h3>'+esc(reportData.title)+'</h3><div style="overflow-x:auto"><table><tr>'+reportData.columns.map(function(c){ return '<th>'+esc(c)+'</th>'; }).join('')+'</tr>'
+  + reportData.rows.map(function(r){ return '<tr>'+r.map(function(c){ return '<td>'+esc(c)+'</td>'; }).join('')+'</tr>'; }).join('') + '</table></div>'
+  + (S.branding && S.branding.companyName ? '<p class="small muted">'+esc(S.branding.companyName)+(S.branding.address?' · '+esc(S.branding.address):'')+(S.branding.phone?' · '+esc(S.branding.phone):'')+'</p>' : '');
+}
+function exportReport(){
+  if(!reportData){ toast('Show a report first.', true); return; }
+  var csv = [reportData.columns].concat(reportData.rows).map(function(r){
+    return r.map(function(c){ return '"'+String(c==null?'':c).replace(/"/g,'""')+'"'; }).join(',');
+  }).join('\n');
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = reportData.title.replace(/[^a-z0-9]+/gi,'-') + '.csv';
+  a.click();
+}
+
+/* ================= users ================= */
+var PERM_DEFS = [];
+async function viewUsers(){
+  PERM_DEFS = (window.__permDefs || PERM_DEFS);
+  var list = await call('listUsers');
+  $('view-actions').innerHTML = '<button class="btn" onclick="userForm()">+ New User (duplicates a profile)</button>';
+  window.__users = list;
+  $('view').innerHTML = '<div class="card"><table><tr><th>Name</th><th>Username</th><th>Role</th><th>Permissions</th><th>Status</th><th></th></tr>'
+  + list.map(function(u){
+    return '<tr><td><b>'+esc(u.fullName)+'</b>'+(u.isMe?' (you)':'')+'</td><td>'+esc(u.username)+'</td><td>'+(u.isAdmin?badge('Admin','green'):badge('Staff','grey'))+'</td><td class="small">'+(u.isAdmin?'All':u.perms.length+' ticks')+'</td><td>'+badge(u.active?'Active':'Inactive', u.active?'green':'red')+'</td>'
+    + '<td class="no-print"><button class="btn secondary small" onclick="userForm(\''+u.id+'\')">Edit</button></td></tr>';
+  }).join('') + '</table></div>'
+  + '<div class="card"><h3>My password</h3><div class="flex"><input type="password" id="mp-old" placeholder="Current password" style="width:200px"><input type="password" id="mp-new" placeholder="New password" style="width:200px"><button class="btn secondary" onclick="changeMyPw()">Change my password</button></div></div>';
+}
+async function changeMyPw(){ try { await call('changeMyPassword', $('mp-old').value, $('mp-new').value); toast('Password changed.'); } catch(e){} }
+function permChecks(selected){
+  var defs = window.__permDefs || [];
+  return '<div class="checks">'+defs.map(function(d){
+    return '<label><input type="checkbox" class="perm-tick" value="'+esc(d[0])+'"'+(selected.indexOf(d[0])!==-1?' checked':'')+'> '+esc(d[1])+'</label>';
+  }).join('')+'</div>';
+}
+function userForm(id){
+  var u = id ? (window.__users||[]).find(function(x){ return x.id===id; }) : null;
+  openModal('<h3 style="margin-top:0">'+(u?'Edit User':'New User')+'</h3>'
+  + '<div class="grid c2"><div class="field"><label>Full name *</label><input id="uf-name" value="'+esc(u?u.fullName:'')+'"></div>'
+  + (u?'':'<div class="field"><label>Username *</label><input id="uf-user"></div><div class="field"><label>Password *</label><input type="password" id="uf-pass"></div>'
+  + '<div class="field"><label>Duplicate permissions from</label><select id="uf-dup">'+(window.__users||[]).map(function(x){ return '<option value="'+x.id+'">'+esc(x.fullName)+'</option>'; }).join('')+'</select></div>')
+  + (u?'<div class="field"><label>Reset password (optional)</label><input type="password" id="uf-newpass" placeholder="Leave blank to keep"></div>'
+     + '<div class="field"><label>Status</label><select id="uf-active"><option value="1"'+(u.active?' selected':'')+'>Active</option><option value="0"'+(!u.active?' selected':'')+'>Inactive (login stops)</option></select></div>':'')
+  + '</div><label>Permissions — tick what this user may do</label><div id="uf-perms">'+permChecks(u?u.perms:(window.__users&&window.__users[0]?window.__users[0].perms:[]))+'</div>'
+  + '<div class="flex mt"><button class="btn" onclick="saveUserForm(\''+(id||'')+'\')">Save user</button><button class="btn secondary" onclick="closeModal()">Cancel</button></div>');
+  if (!u){
+    $('uf-dup').addEventListener('change', function(){
+      var src = (window.__users||[]).find(function(x){ return x.id === this.value; });
+      if (src) $('uf-perms').innerHTML = permChecks(src.perms);
+    });
+  }
+}
+async function saveUserForm(id){
+  var perms = Array.prototype.map.call(document.querySelectorAll('.perm-tick:checked'), function(c){ return c.value; });
+  var p = { id: id||undefined, fullName: $('uf-name').value.trim(), perms: perms };
+  if (!id){ p.username = $('uf-user').value.trim(); p.password = $('uf-pass').value; p.duplicateFromId = $('uf-dup').value; }
+  else { if ($('uf-newpass').value) p.newPassword = $('uf-newpass').value; p.active = $('uf-active').value==='1'; }
+  try { await call('saveUser', p); closeModal(); toast('User saved.'); go('users'); } catch(e){}
+}
+
+/* ================= history ================= */
+async function viewHistory(){
+  var list = await call('getHistory', 300);
+  $('view').innerHTML = '<div class="card"><table><tr><th>When</th><th>User</th><th>Action</th><th>Details</th></tr>'
+  + list.map(function(r){ return '<tr><td>'+esc(String(r.at).slice(0,16).replace('T',' '))+'</td><td>'+esc(r.username)+'</td><td>'+esc(r.action)+'</td><td>'+esc(r.details)+'</td></tr>'; }).join('') + '</table></div>';
+}
+
+/* ================= settings ================= */
+async function viewSettings(){
+  var s = await call('getSettingsAdmin');
+  var locked = S.boot.lockedMonths || [];
+  $('view').innerHTML = '<div class="grid c2"><div>'
+  + '<div class="card"><h3>Company & Branding</h3>'
+  + fld('Company name','st-company', s.companyName) + fld('Address','st-address', s.address) + fld('Phone','st-phone', s.phone)
+  + '<div class="field"><label>Logo — paste SVG code (no file upload)</label><textarea id="st-logo" rows="3">'+esc(s.logoSvg)+'</textarea></div>'
+  + '<div class="field"><label>Brand color</label><input type="color" id="st-color" value="'+esc(s.brandColor)+'"></div>'
+  + fld('Recovery email (admin password resets)','st-recovery', s.recoveryEmail)
+  + '<button class="btn" onclick="saveSettingsUi()">Save settings</button></div>'
+  + '<div class="card"><h3>Rules & Thresholds</h3>'
+  + fldn('Low-card warning (% of limit remaining)','st-low', s.lowCardPct) + fldn('Card expiry warning (days)','st-exp', s.expiryWarnDays)
+  + fldn('Meter-jump warning (km)','st-jump', s.meterJumpKm) + fldn('Service warning (km before due)','st-svcw', s.serviceWarnKm)
+  + fldn('Trip open too long (days)','st-tripdays', s.tripLongDays)
+  + '<div class="field"><label>Company tank fuel type (blank = no check)</label><select id="st-tankfuel"><option value="">— not set —</option><option'+(s.companyTankFuelType==='Petrol'?' selected':'')+'>Petrol</option><option'+(s.companyTankFuelType==='Diesel'?' selected':'')+'>Diesel</option></select></div>'
+  + '<button class="btn" onclick="saveSettingsUi()">Save settings</button></div>'
+  + '<div class="card"><h3>Month Lock</h3><div class="flex"><input type="month" id="lk-month" style="width:auto"><button class="btn secondary" onclick="lockMonthUi(true)">Lock</button><button class="btn secondary" onclick="lockMonthUi(false)">Unlock</button></div>'
+  + '<p class="small mt">Locked: '+(locked.length?locked.join(', '):'none')+'</p></div></div><div>'
+  + '<div class="card"><h3>Read-Only API Keys</h3><div class="flex mb"><input id="ak-label" placeholder="Label (e.g. Management app)" style="flex:1"><button class="btn small" onclick="createKeyUi()">Create key</button></div>'
+  + (s.apiKeys.length ? s.apiKeys.map(function(k){ return '<div class="flex spread" style="padding:4px 0;border-bottom:1px solid var(--border)"><span class="small"><b>'+esc(k.label)+'</b> · '+esc(String(k.key).slice(0,14))+'… '+(k.active?badge('active','green'):badge('revoked','red'))+'</span>'+(k.active?'<button class="btn danger small" onclick="revokeKeyUi(\''+esc(k.key)+'\')">Revoke</button>':'')+'</div>'; }).join('') : '<p class="muted small">No keys yet. Other apps read data with ?api=…&key=… — PINs/passwords are never returned.</p>')
+  + '</div>'
+  + '<div class="card"><h3>Backup & Restore</h3><p class="small muted">Restore first downloads your current data automatically, then asks you to confirm.</p>'
+  + '<div class="flex"><button class="btn secondary" onclick="backupUi()">Download backup</button>'
+  + '<label class="btn secondary" style="margin:0">Restore from file<input type="file" id="rs-file" accept=".json" style="display:none" onchange="restoreUi(this)"></label></div></div>'
+  + '<div class="card"><h3>Bulk Import (CSV)</h3><div class="flex"><select id="bi-kind" style="width:auto"><option value="vehicles">Vehicles</option><option value="cards">Cards</option><option value="drivers">Drivers</option><option value="pumps">Pumps</option></select>'
+  + '<label class="btn secondary" style="margin:0">Import CSV<input type="file" accept=".csv" style="display:none" onchange="importUi(this)"></label></div>'
+  + '<p class="small muted">First row must be headers (e.g. RegNo, Model, Fuel Type, Average…). Bad rows are skipped and reported.</p></div>'
+  + '<div class="card"><h3>Year Archiving</h3><div class="flex"><input id="ar-year" placeholder="Year e.g. 2026" style="width:130px"><button class="btn secondary" onclick="archiveUi()">Archive year</button></div>'
+  + '<p class="small muted">Archived: '+(s.archives.length ? s.archives.map(function(a){ return '<a href="'+esc(a.url)+'" target="_blank">'+esc(a.year)+'</a>'; }).join(', ') : 'none')+'</p></div>'
+  + '<div class="card"><h3>Demo Data</h3><div class="flex"><button class="btn secondary" onclick="demoUi(true)">Load demo data</button><button class="btn danger" onclick="demoUi(false)">Clear demo data</button></div>'
+  + '<p class="small muted">Demo rows are marked and clearing removes only demo rows — never real data.</p></div>'
+  + '</div></div>';
+}
+function fld(label, id, val){ return '<div class="field"><label>'+label+'</label><input id="'+id+'" value="'+esc(val||'')+'"></div>'; }
+function fldn(label, id, val){ return '<div class="field"><label>'+label+'</label><input type="number" id="'+id+'" value="'+esc(val)+'"></div>'; }
+async function saveSettingsUi(){
+  var p = { companyName: $('st-company').value, address: $('st-address').value, phone: $('st-phone').value,
+    logoSvg: $('st-logo').value, brandColor: $('st-color').value, recoveryEmail: $('st-recovery').value,
+    lowCardPct: $('st-low').value, expiryWarnDays: $('st-exp').value, meterJumpKm: $('st-jump').value,
+    serviceWarnKm: $('st-svcw').value, tripLongDays: $('st-tripdays').value, companyTankFuelType: $('st-tankfuel').value };
+  try { var r = await call('saveSettingsAdmin', p); S.branding = r.branding; applyBranding(); toast('Settings saved.'); } catch(e){}
+}
+async function lockMonthUi(lock){ try { await call('setMonthLock', $('lk-month').value, lock); toast(lock?'Month locked.':'Month unlocked.'); go('settings'); } catch(e){} }
+async function createKeyUi(){ try { var r = await call('createApiKey', $('ak-label').value || 'API key'); prompt('Copy this API key now (shown once in full):', r.key); go('settings'); } catch(e){} }
+async function revokeKeyUi(key){ if(!confirm('Revoke this key? Apps using it will stop working.')) return; try { await call('revokeApiKey', key); go('settings'); } catch(e){} }
+function downloadJson(obj, name){
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }));
+  a.download = name; a.click();
+}
+async function backupUi(){ try { var b = await call('downloadBackup'); downloadJson(b, 'fuel-backup-'+new Date().toISOString().slice(0,10)+'.json'); toast('Backup downloaded.'); } catch(e){} }
+async function restoreUi(input){
+  var file = input.files[0]; if(!file) return;
+  try {
+    var current = await call('prepareRestore');
+    downloadJson(current, 'fuel-backup-BEFORE-restore-'+new Date().toISOString().slice(0,10)+'.json');
+    if(!confirm('Your CURRENT data was just downloaded as a safety backup. Continue restoring from the selected file? This replaces all current data.')) return;
+    var text = await file.text();
+    await call('confirmRestore', JSON.parse(text));
+    toast('Restore complete.'); go('dashboard');
+  } catch(e){ toast('Restore failed: '+e.message, true); }
+  input.value='';
+}
+async function importUi(input){
+  var file = input.files[0]; if(!file) return;
+  try {
+    var text = await file.text();
+    var r = await call('bulkImport', $('bi-kind').value, text);
+    toast('Imported '+r.added+' rows.'+(r.errors.length?' Skipped: '+r.errors.join(' | '):''), r.errors.length>0);
+    go('settings');
+  } catch(e){}
+  input.value='';
+}
+async function archiveUi(){
+  var y = $('ar-year').value.trim(); if(!/^\d{4}$/.test(y)){ toast('Enter a 4-digit year.', true); return; }
+  if(!confirm('Archive all '+y+' entries, trips, audits and flags into a separate Sheet and remove them from the live system?')) return;
+  try { var r = await call('archiveYear', y); toast('Year archived.'); window.open(r.url, '_blank'); go('settings'); } catch(e){}
+}
+async function demoUi(load){
+  try { await call(load ? 'loadDemoData' : 'clearDemoData'); toast(load?'Demo data loaded.':'Demo data cleared.'); go('dashboard'); } catch(e){}
+}
+
+/* store perm defs when login returns them */
+var __origLogin = null;
+document.addEventListener('DOMContentLoaded', function(){});
+boot();
+</script>
